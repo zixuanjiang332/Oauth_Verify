@@ -1,0 +1,34 @@
+server-id: "survival-1"
+
+# microsoft-oauth.enabled 为 false 时使用的备用验证入口。
+verification-start-url: "https://verify.example.com/start"
+
+# 插件轮询的外部验证服务接口。
+completed-endpoint: "https://verify.example.com/api/verifications/completed"
+
+# 必须与外部验证服务配置的共享密钥保持一致。
+# 正式服请使用足够长的随机值。
+shared-secret: "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"
+
+database-file: "msverify.db"
+
+microsoft-oauth:
+  enabled: true
+  authorization-endpoint: "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize"
+  client-id: "74305fb6-cdd7-48fa-8fea-8d75e154cbd0"
+  redirect-uri: "https://verify.example.com/oauth/microsoft/callback"
+  scope: "XboxLive.signin openid email profile"
+  prompt: "select_account"
+
+challenge:
+  ttl-seconds: 300
+
+poller:
+  enabled: true
+  interval-seconds: 15
+  request-timeout-seconds: 10
+
+messages:
+  reload: "MsVerify 配置已重新加载。"
+  no-permission: "你没有权限使用这个命令。"
+  usage: "用法：/msverify <reload|status|unverify>"

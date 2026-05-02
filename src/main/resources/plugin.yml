@@ -1,0 +1,17 @@
+name: MsVerify
+version: ${project.version}
+main: com.craftguard.msverify.MsVerifyPlugin
+api-version: '1.21'
+author: CraftGuard
+description: Microsoft OAuth 支持的 Minecraft 验证插件。
+
+commands:
+  msverify:
+    description: 管理 Microsoft 验证状态。
+    usage: /msverify <reload|status|unverify>
+    permission: msverify.admin
+
+permissions:
+  msverify.admin:
+    description: 允许管理 Microsoft 验证状态。
+    default: op

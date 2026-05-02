@@ -1,0 +1,10 @@
+target/
+.idea/
+.vscode/
+*.iml
+*.log
+*.db
+*.db-shm
+*.db-wal
+local-verifier/logs/
+local-verifier/.env
