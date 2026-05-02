@@ -1,15 +1,13 @@
 package com.craftguard.msverify.service;
 
 import com.craftguard.msverify.ConfigValues;
-import com.craftguard.msverify.security.ChallengeTokenService;
-import com.craftguard.msverify.security.IssuedChallenge;
-import com.craftguard.msverify.storage.BatchApplyResult;
-import com.craftguard.msverify.storage.CompletedVerification;
+import com.craftguard.msverify.storage.PendingVerification;
 import com.craftguard.msverify.storage.VerificationRepository;
 import com.craftguard.msverify.storage.VerifiedPlayer;
 import com.craftguard.msverify.util.UuidUtil;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.io.IOException;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
@@ -20,20 +18,20 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class VerificationService {
     private final JavaPlugin plugin;
     private final VerificationRepository repository;
+    private final VerificationApiClient apiClient;
     private final Map<UUID, VerifiedPlayer> verifiedCache = new ConcurrentHashMap<>();
 
     private volatile ConfigValues config;
-    private volatile ChallengeTokenService challengeTokenService;
 
     public VerificationService(JavaPlugin plugin, VerificationRepository repository, ConfigValues config) {
         this.plugin = plugin;
         this.repository = repository;
+        this.apiClient = new VerificationApiClient(plugin);
         reload(config);
     }
 
     public void reload(ConfigValues nextConfig) {
         this.config = nextConfig;
-        this.challengeTokenService = new ChallengeTokenService(nextConfig);
     }
 
     public ConfigValues config() {
@@ -50,26 +48,56 @@ public final class VerificationService {
         return verifiedCache.containsKey(uuid);
     }
 
-    public IssuedChallenge issueChallenge(UUID minecraftUuid, String minecraftName) throws SQLException {
-        IssuedChallenge challenge = challengeTokenService.issue(minecraftUuid, minecraftName);
-        repository.saveChallenge(challenge);
-        return challenge;
-    }
-
-    public String currentCursor() throws SQLException {
-        return repository.getCursor(config.serverId());
-    }
-
-    public BatchApplyResult applyCompleted(List<CompletedVerification> items, String nextCursor) throws SQLException {
-        BatchApplyResult result = repository.applyCompletedBatch(config.serverId(), items, nextCursor, System.currentTimeMillis());
-        for (VerifiedPlayer player : result.verifiedPlayers()) {
-            verifiedCache.put(player.minecraftUuid(), player);
+    public GeneratedVerification createVerification(UUID minecraftUuid, String minecraftName)
+            throws SQLException, IOException, InterruptedException {
+        long now = System.currentTimeMillis();
+        Optional<PendingVerification> reusable = repository.findReusablePendingVerification(minecraftUuid, now);
+        if (reusable.isPresent()) {
+            PendingVerification pending = reusable.get();
+            return new GeneratedVerification(pending.token(), pending.link(), pending.expiresAt());
         }
-        return result;
+
+        GeneratedVerification generated = apiClient.generate(config, minecraftUuid, minecraftName);
+        repository.savePendingVerification(new PendingVerification(
+                generated.token(),
+                minecraftUuid,
+                minecraftName,
+                generated.link(),
+                Math.min(generated.expiresAt(), now + config.challengeTtl().toMillis()),
+                now
+        ));
+        return generated;
+    }
+
+    public List<PendingVerification> listPendingVerifications() throws SQLException {
+        return repository.listPendingVerifications(System.currentTimeMillis());
+    }
+
+    public Optional<VerifiedPlayer> checkPendingVerification(PendingVerification pending)
+            throws IOException, InterruptedException, SQLException {
+        RemoteVerificationResult result = apiClient.fetchResult(config, pending.token());
+        if (result.pending()) {
+            return Optional.empty();
+        }
+        if (result.terminalFailure()) {
+            repository.deletePendingVerification(pending.token());
+            plugin.getLogger().warning("验证 token 已被远端标记为失败：" + pending.token() + " " + result.message());
+            return Optional.empty();
+        }
+        if (!result.verified()) {
+            return Optional.empty();
+        }
+
+        Optional<VerifiedPlayer> verified = repository.applyRemoteVerification(result, System.currentTimeMillis());
+        verified.ifPresent(player -> verifiedCache.put(player.minecraftUuid(), player));
+        if (verified.isEmpty()) {
+            plugin.getLogger().warning("远端验证结果与本地 token 映射不匹配，token=" + pending.token());
+        }
+        return verified;
     }
 
     public int cleanupExpiredChallenges() throws SQLException {
-        return repository.deleteExpiredChallenges(System.currentTimeMillis());
+        return repository.deleteExpiredPendingVerifications(System.currentTimeMillis());
     }
 
     public Optional<VerifiedPlayer> findVerified(String playerOrUuid) throws SQLException {

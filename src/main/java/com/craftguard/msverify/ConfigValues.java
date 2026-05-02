@@ -8,22 +8,14 @@ import net.kyori.adventure.text.format.TextDecoration;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
 
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 
 public record ConfigValues(
         String serverId,
-        String verificationStartUrl,
-        String completedEndpoint,
-        String sharedSecret,
+        String verificationGenerateEndpoint,
+        String verificationResultEndpoint,
+        String apiKey,
         String databaseFileName,
-        boolean microsoftOAuthEnabled,
-        String microsoftAuthorizationEndpoint,
-        String microsoftClientId,
-        String microsoftRedirectUri,
-        String microsoftScope,
-        String microsoftPrompt,
         Duration challengeTtl,
         boolean pollerEnabled,
         Duration pollInterval,
@@ -32,22 +24,16 @@ public record ConfigValues(
         String noPermissionMessage,
         String usageMessage
 ) {
-    private static final String DEFAULT_SECRET = "CHANGE_ME_TO_A_LONG_RANDOM_SECRET";
+    private static final String DEFAULT_API_KEY = "local-test-api-key-change-me";
 
     public static ConfigValues from(JavaPlugin plugin) {
         FileConfiguration config = plugin.getConfig();
         ConfigValues values = new ConfigValues(
                 config.getString("server-id", "survival-1"),
-                config.getString("verification-start-url", "https://verify.example.com/start"),
-                config.getString("completed-endpoint", "https://verify.example.com/api/verifications/completed"),
-                config.getString("shared-secret", DEFAULT_SECRET),
+                config.getString("verification-generate-endpoint", "https://www.chaos-smp.cn/verify/gen"),
+                config.getString("verification-result-endpoint", "https://www.chaos-smp.cn/verify/get"),
+                config.getString("api-key", DEFAULT_API_KEY),
                 config.getString("database-file", "msverify.db"),
-                config.getBoolean("microsoft-oauth.enabled", true),
-                config.getString("microsoft-oauth.authorization-endpoint", "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize"),
-                config.getString("microsoft-oauth.client-id", "CHANGE_ME_CLIENT_ID"),
-                config.getString("microsoft-oauth.redirect-uri", "https://verify.example.com/oauth/microsoft/callback"),
-                config.getString("microsoft-oauth.scope", "XboxLive.signin openid email profile"),
-                config.getString("microsoft-oauth.prompt", "select_account"),
                 Duration.ofSeconds(Math.max(30, config.getLong("challenge.ttl-seconds", 300))),
                 config.getBoolean("poller.enabled", true),
                 Duration.ofSeconds(Math.max(5, config.getLong("poller.interval-seconds", 15))),
@@ -63,16 +49,10 @@ public record ConfigValues(
     public ConfigValues withDatabaseFileName(String databaseFileName) {
         return new ConfigValues(
                 serverId,
-                verificationStartUrl,
-                completedEndpoint,
-                sharedSecret,
+                verificationGenerateEndpoint,
+                verificationResultEndpoint,
+                apiKey,
                 databaseFileName,
-                microsoftOAuthEnabled,
-                microsoftAuthorizationEndpoint,
-                microsoftClientId,
-                microsoftRedirectUri,
-                microsoftScope,
-                microsoftPrompt,
                 challengeTtl,
                 pollerEnabled,
                 pollInterval,
@@ -81,39 +61,6 @@ public record ConfigValues(
                 noPermissionMessage,
                 usageMessage
         );
-    }
-
-    public String buildVerificationUrl(String challengeToken) {
-        if (microsoftOAuthEnabled) {
-            return buildMicrosoftAuthorizationUrl(challengeToken);
-        }
-
-        String separator = verificationStartUrl.contains("?") ? "&" : "?";
-        return verificationStartUrl
-                + separator
-                + "challenge="
-                + URLEncoder.encode(challengeToken, StandardCharsets.UTF_8)
-                + "&serverId="
-                + URLEncoder.encode(serverId, StandardCharsets.UTF_8);
-    }
-
-    private String buildMicrosoftAuthorizationUrl(String challengeToken) {
-        String separator = microsoftAuthorizationEndpoint.contains("?") ? "&" : "?";
-        StringBuilder builder = new StringBuilder(microsoftAuthorizationEndpoint)
-                .append(separator)
-                .append("client_id=").append(encode(microsoftClientId))
-                .append("&response_type=code")
-                .append("&redirect_uri=").append(encode(microsoftRedirectUri))
-                .append("&scope=").append(encode(microsoftScope))
-                .append("&state=").append(encode(challengeToken));
-        if (microsoftPrompt != null && !microsoftPrompt.isBlank()) {
-            builder.append("&prompt=").append(encode(microsoftPrompt));
-        }
-        return builder.toString();
-    }
-
-    private String encode(String value) {
-        return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 
     public Component renderVerificationChatComponent(String verificationUrl) {
@@ -139,12 +86,13 @@ public record ConfigValues(
         return expiresMinutes;
     }
 
+    public String sharedSecret() {
+        return apiKey;
+    }
+
     private void warnIfUnsafe(JavaPlugin plugin) {
-        if (DEFAULT_SECRET.equals(sharedSecret) || sharedSecret.length() < 32) {
-            plugin.getLogger().warning("shared-secret 缺失或过短。正式服请使用足够长的随机密钥。");
-        }
-        if (microsoftOAuthEnabled && ("CHANGE_ME_CLIENT_ID".equals(microsoftClientId) || microsoftRedirectUri.contains("verify.example.com"))) {
-            plugin.getLogger().warning("microsoft-oauth 已启用，但 client-id 或 redirect-uri 仍是占位值。");
+        if (apiKey == null || apiKey.isBlank() || apiKey.contains("CHANGE_ME") || apiKey.length() < 16) {
+            plugin.getLogger().warning("api-key 缺失或过短。正式服请使用足够长的随机密钥。");
         }
     }
 }

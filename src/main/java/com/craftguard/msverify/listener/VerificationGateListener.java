@@ -1,8 +1,8 @@
 package com.craftguard.msverify.listener;
 
-import com.craftguard.msverify.security.IssuedChallenge;
-import com.craftguard.msverify.service.VerificationService;
 import com.craftguard.msverify.ConfigValues;
+import com.craftguard.msverify.service.GeneratedVerification;
+import com.craftguard.msverify.service.VerificationService;
 import io.papermc.paper.event.player.AsyncChatEvent;
 import net.kyori.adventure.text.Component;
 import org.bukkit.Bukkit;
@@ -23,6 +23,7 @@ import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.io.IOException;
 import java.sql.SQLException;
 import java.util.Set;
 import java.util.UUID;
@@ -144,21 +145,30 @@ public final class VerificationGateListener implements Listener {
 
     private void sendVerificationLink(UUID uuid, String name) {
         try {
-            IssuedChallenge challenge = verificationService.issueChallenge(uuid, name);
+            GeneratedVerification verification = verificationService.createVerification(uuid, name);
             ConfigValues config = verificationService.config();
-            String verificationUrl = config.buildVerificationUrl(challenge.token());
             Bukkit.getScheduler().runTask(plugin, () -> {
                 Player player = Bukkit.getPlayer(uuid);
                 if (player == null || !player.isOnline() || !gatedPlayers.contains(uuid)) {
                     return;
                 }
-                player.sendMessage(config.renderVerificationChatComponent(verificationUrl));
+                player.sendMessage(config.renderVerificationChatComponent(verification.link()));
             });
         } catch (SQLException exception) {
             Bukkit.getScheduler().runTask(plugin, () -> {
                 Player player = Bukkit.getPlayer(uuid);
                 if (player != null && player.isOnline()) {
                     player.kick(Component.text("验证存储暂时不可用，请稍后重试。"));
+                }
+            });
+        } catch (IOException | InterruptedException exception) {
+            if (exception instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                Player player = Bukkit.getPlayer(uuid);
+                if (player != null && player.isOnline()) {
+                    player.sendMessage(Component.text("验证服务暂时不可用，请稍后重进服务器获取新的验证链接。"));
                 }
             });
         }

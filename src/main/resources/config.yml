@@ -1,24 +1,16 @@
 server-id: "survival-1"
 
-# microsoft-oauth.enabled 为 false 时使用的备用验证入口。
-verification-start-url: "https://verify.example.com/start"
+# 插件向验证中心申请玩家专属验证链接。
+verification-generate-endpoint: "https://www.chaos-smp.cn/verify/gen"
 
-# 插件轮询的外部验证服务接口。
-completed-endpoint: "https://verify.example.com/api/verifications/completed"
+# 插件用 gen 返回的 token 查询验证结果。
+verification-result-endpoint: "https://www.chaos-smp.cn/verify/get"
 
-# 必须与外部验证服务配置的共享密钥保持一致。
+# 必须与外部验证服务配置的 API Key 保持一致。
 # 正式服请使用足够长的随机值。
-shared-secret: "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"
+api-key: "local-test-api-key-change-me"
 
 database-file: "msverify.db"
-
-microsoft-oauth:
-  enabled: true
-  authorization-endpoint: "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize"
-  client-id: "74305fb6-cdd7-48fa-8fea-8d75e154cbd0"
-  redirect-uri: "https://verify.example.com/oauth/microsoft/callback"
-  scope: "XboxLive.signin openid email profile"
-  prompt: "select_account"
 
 challenge:
   ttl-seconds: 300

@@ -10,9 +10,11 @@ const config = {
   host: process.env.MSVERIFY_HOST || "127.0.0.1",
   port: Number(process.env.MSVERIFY_PORT || "8080"),
   serverId: process.env.MSVERIFY_SERVER_ID || "survival-1",
-  clientId: process.env.MSVERIFY_CLIENT_ID || "74305fb6-cdd7-48fa-8fea-8d75e154cbd0",
+  apiKey: process.env.MSVERIFY_API_KEY || "local-test-api-key-change-me",
+  publicBaseUrl: process.env.MSVERIFY_PUBLIC_BASE_URL || "",
+  clientId: process.env.MSVERIFY_CLIENT_ID || "449be4a2-70a7-4b6b-86b3-ff1f926398f3",
   clientSecret: process.env.MSVERIFY_CLIENT_SECRET || "",
-  redirectUri: process.env.MSVERIFY_REDIRECT_URI || "http://localhost:8080/oauth/microsoft/callback",
+  redirectUri: process.env.MSVERIFY_REDIRECT_URI || "https://www.chaos-smp.cn/verify",
   sharedSecret: process.env.MSVERIFY_SHARED_SECRET || "local-test-change-this-secret-before-production-0123456789",
   authorizationEndpoint:
     process.env.MSVERIFY_AUTH_ENDPOINT || "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize",
@@ -53,6 +55,18 @@ function constantTimeEqual(left, right) {
     return false;
   }
   return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function publicBaseUrl(req) {
+  if (config.publicBaseUrl) {
+    return config.publicBaseUrl.replace(/\/+$/, "");
+  }
+  return `http://${req.headers.host || `${config.host}:${config.port}`}`;
+}
+
+function verifyApiKey(req) {
+  const supplied = req.headers["x-api-key"] || "";
+  return constantTimeEqual(String(config.apiKey), String(supplied));
 }
 
 function parseChallengeToken(token) {
@@ -284,6 +298,138 @@ async function verifyMinecraftOwnership(code, codeVerifier, expectedUuid, expect
   };
 }
 
+function handleGenerate(req, res, url) {
+  if (!verifyApiKey(req)) {
+    return sendJson(res, 401, { error: "invalid_api_key" });
+  }
+
+  const serverId = url.searchParams.get("serverId") || "";
+  const minecraftUuid = url.searchParams.get("minecraftUuid") || "";
+  const minecraftName = url.searchParams.get("minecraftName") || "";
+  if (serverId !== config.serverId) {
+    return sendJson(res, 400, { error: "invalid_server_id" });
+  }
+  let uuid;
+  try {
+    uuid = canonicalUuid(minecraftUuid);
+  } catch (error) {
+    return sendJson(res, 400, { error: "invalid_uuid", message: error.message });
+  }
+  if (!minecraftName.trim()) {
+    return sendJson(res, 400, { error: "missing_name" });
+  }
+
+  const token = randomBase64Url(32);
+  const now = Date.now();
+  const expiresAt = now + 5 * 60_000;
+  const link = `${publicBaseUrl(req)}/verify?token=${encodeURIComponent(token)}`;
+  pendingStates.set(token, {
+    token,
+    apiGenerated: true,
+    codeVerifier: "",
+    challengeToken: "",
+    payload: {
+      v: 2,
+      serverId,
+      challengeId: token,
+      minecraftUuid: uuid,
+      minecraftName,
+      issuedAt: now,
+      expiresAt,
+    },
+    createdAt: now,
+    completedAt: 0,
+    status: "pending",
+    verified: null,
+    error: "",
+  });
+  return sendJson(res, 200, { token, link, expiresAt });
+}
+
+function handleGet(req, res, url) {
+  if (!verifyApiKey(req)) {
+    return sendJson(res, 401, { error: "invalid_api_key" });
+  }
+
+  const token = url.searchParams.get("token") || "";
+  const pending = pendingStates.get(token);
+  if (!pending) {
+    return sendJson(res, 404, { status: "not_found", token, message: "token 不存在或已过期" });
+  }
+  if (Number(pending.payload.expiresAt) < Date.now() && pending.status !== "verified") {
+    pending.status = "expired";
+    pending.error = "验证 token 已过期";
+    return sendJson(res, 200, { status: "expired", token, message: pending.error });
+  }
+  if (pending.status === "verified" && pending.verified) {
+    return sendJson(res, 200, {
+      status: "verified",
+      token,
+      email: pending.verified.email || "",
+      uuid: pending.verified.minecraftUuid,
+      minecraftUuid: pending.verified.minecraftUuid,
+      minecraftName: pending.verified.minecraftName,
+      xuid: pending.verified.xuid,
+      verifiedAt: pending.verified.verifiedAt,
+    });
+  }
+  if (pending.status === "error" || pending.status === "expired" || pending.status === "denied") {
+    return sendJson(res, 200, { status: pending.status, token, message: pending.error || "验证失败" });
+  }
+  return sendJson(res, 200, { status: "pending", token });
+}
+
+function handleVerifyPage(req, res, url) {
+  if (url.searchParams.has("code") || url.searchParams.has("error")) {
+    handleCallback(req, res, url).catch((error) =>
+      sendHtml(res, 500, "验证失败", `<p>${escapeHtml(error.message)}</p>`)
+    );
+    return;
+  }
+
+  const token = url.searchParams.get("token") || "";
+  const pending = pendingStates.get(token);
+  if (!pending || !pending.apiGenerated) {
+    return sendHtml(res, 404, "验证链接无效", "<p>这个验证链接不存在或已经过期，请回到服务器重新获取。</p>");
+  }
+  if (Number(pending.payload.expiresAt) < Date.now()) {
+    pending.status = "expired";
+    return sendHtml(res, 400, "验证链接已过期", "<p>请回到服务器重新获取验证链接。</p>");
+  }
+  if (pending.status === "verified" && pending.verified) {
+    return sendHtml(
+      res,
+      200,
+      "验证已完成",
+      `<p>Minecraft 玩家：<strong>${escapeHtml(pending.verified.minecraftName)}</strong></p>
+       <p>Microsoft 邮箱：<strong>${escapeHtml(pending.verified.email || "微软未返回邮箱")}</strong></p>
+       <p>现在可以回到服务器。</p>`
+    );
+  }
+
+  const usePublicClientPkce = !config.clientSecret;
+  if (usePublicClientPkce && !pending.codeVerifier) {
+    pending.codeVerifier = randomBase64Url(64);
+    pending.codeChallenge = sha256Base64Url(pending.codeVerifier);
+  }
+
+  const authorizationUrl = new URL(config.authorizationEndpoint);
+  authorizationUrl.searchParams.set("client_id", config.clientId);
+  authorizationUrl.searchParams.set("response_type", "code");
+  authorizationUrl.searchParams.set("response_mode", "query");
+  authorizationUrl.searchParams.set("redirect_uri", config.redirectUri);
+  authorizationUrl.searchParams.set("scope", config.scope);
+  authorizationUrl.searchParams.set("state", token);
+  authorizationUrl.searchParams.set("prompt", "select_account");
+  if (usePublicClientPkce) {
+    authorizationUrl.searchParams.set("code_challenge", pending.codeChallenge);
+    authorizationUrl.searchParams.set("code_challenge_method", "S256");
+  }
+
+  res.writeHead(302, { location: authorizationUrl.toString(), "cache-control": "no-store" });
+  res.end();
+}
+
 function handleStart(req, res, url) {
   const challengeToken = url.searchParams.get("challenge");
   if (!challengeToken) {
@@ -346,8 +492,10 @@ async function handleCallback(req, res, url) {
     return sendHtml(res, 400, "回调无效", "<p>Microsoft 回调缺少 code 或 state。</p>");
   }
 
-  let pending;
-  if (config.clientSecret) {
+  let pending = pendingStates.get(state);
+  if (pending) {
+    // gen/get 模式下 state 就是 token，必须保留映射，等待插件 /verify/get 查询。
+  } else if (config.clientSecret) {
     try {
       const payload = parseChallengeToken(state);
       pending = {
@@ -364,7 +512,6 @@ async function handleCallback(req, res, url) {
     if (!pending) {
       return sendHtml(res, 400, "回调无效", "<p>登录状态已过期，请回到 Minecraft 服务器重新点击新的验证链接。</p>");
     }
-    pendingStates.delete(state);
   }
 
   try {
@@ -374,15 +521,20 @@ async function handleCallback(req, res, url) {
       pending.payload.minecraftUuid,
       pending.payload.minecraftName
     );
-    completions.push({
-      id: nextCompletionId++,
-      serverId: pending.payload.serverId,
-      challengeId: pending.payload.challengeId,
-      minecraftUuid: verified.minecraftUuid,
-      minecraftName: verified.minecraftName,
-      xuid: verified.xuid,
-      verifiedAt: verified.verifiedAt,
-    });
+    pending.status = "verified";
+    pending.verified = verified;
+    pending.completedAt = Date.now();
+    if (!pending.apiGenerated) {
+      completions.push({
+        id: nextCompletionId++,
+        serverId: pending.payload.serverId,
+        challengeId: pending.payload.challengeId,
+        minecraftUuid: verified.minecraftUuid,
+        minecraftName: verified.minecraftName,
+        xuid: verified.xuid,
+        verifiedAt: verified.verifiedAt,
+      });
+    }
 
     return sendHtml(
       res,
@@ -394,6 +546,11 @@ async function handleCallback(req, res, url) {
        <p>现在可以回到服务器，插件会在下一次轮询后解除冻结。</p>`
     );
   } catch (error) {
+    if (pending && pending.apiGenerated) {
+      pending.status = "error";
+      pending.error = error.message;
+      pending.completedAt = Date.now();
+    }
     return sendHtml(res, 500, "验证失败", `<p>${escapeHtml(error.message)}</p>`);
   }
 }
@@ -434,7 +591,11 @@ function handleCompleted(req, res, url) {
 function cleanupStates() {
   const cutoff = Date.now() - 10 * 60_000;
   for (const [state, pending] of pendingStates) {
-    if (pending.createdAt < cutoff || Number(pending.payload.expiresAt) < Date.now()) {
+    if (pending.status === "verified" && pending.completedAt && pending.completedAt < cutoff) {
+      pendingStates.delete(state);
+      continue;
+    }
+    if (pending.status !== "verified" && (pending.createdAt < cutoff || Number(pending.payload.expiresAt) < Date.now())) {
       pendingStates.delete(state);
     }
   }
@@ -444,10 +605,19 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   cleanupStates();
 
+  if (req.method === "GET" && url.pathname === "/verify/gen") {
+    return handleGenerate(req, res, url);
+  }
+  if (req.method === "GET" && url.pathname === "/verify/get") {
+    return handleGet(req, res, url);
+  }
+  if (req.method === "GET" && url.pathname === "/verify") {
+    return handleVerifyPage(req, res, url);
+  }
   if (req.method === "GET" && url.pathname === "/start") {
     return handleStart(req, res, url);
   }
-  if (req.method === "GET" && url.pathname === "/oauth/microsoft/callback") {
+  if (req.method === "GET" && (url.pathname === "/verify" || url.pathname === "/oauth/microsoft/callback")) {
     handleCallback(req, res, url).catch((error) =>
       sendHtml(res, 500, "验证失败", `<p>${escapeHtml(error.message)}</p>`)
     );
@@ -463,6 +633,7 @@ const server = http.createServer((req, res) => {
       completions: completions.length,
       redirectUri: config.redirectUri,
       clientId: config.clientId,
+      apiMode: "gen-get",
       acceptXboxOnly: config.acceptXboxOnly,
     });
   }
@@ -474,6 +645,7 @@ server.listen(config.port, config.host, () => {
   console.log(`MsVerify 本地验证服务正在监听：http://${config.host}:${config.port}`);
   console.log(`Azure 重定向 URI 必须完全一致：${config.redirectUri}`);
   console.log(`客户端 ID：${config.clientId}`);
+  console.log(`验证 API：/verify/gen 与 /verify/get`);
   console.log(`客户端密钥已配置：${config.clientSecret ? "是" : "否"}`);
   console.log(`临时仅 Xbox 验证模式：${config.acceptXboxOnly ? "已启用" : "已停用"}`);
 });

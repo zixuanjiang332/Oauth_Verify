@@ -99,6 +99,7 @@ public final class MsVerifyCommand implements CommandExecutor, TabCompleter {
                     sender.sendMessage("  UUID: " + player.minecraftUuid());
                     sender.sendMessage("  玩家名: " + player.minecraftName());
                     sender.sendMessage("  XUID: " + player.xuid());
+                    sender.sendMessage("  Microsoft 邮箱: " + (player.email() == null || player.email().isBlank() ? "未记录" : player.email()));
                     sender.sendMessage("  验证时间: " + Instant.ofEpochMilli(player.verifiedAt()));
                 });
             } catch (SQLException | RuntimeException exception) {

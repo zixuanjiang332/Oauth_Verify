@@ -1,6 +1,7 @@
 package com.craftguard.msverify.storage;
 
 import com.craftguard.msverify.security.IssuedChallenge;
+import com.craftguard.msverify.service.RemoteVerificationResult;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
@@ -56,7 +57,7 @@ public final class VerificationRepository {
     public synchronized Map<UUID, VerifiedPlayer> loadVerifiedPlayers() throws SQLException {
         Map<UUID, VerifiedPlayer> players = new LinkedHashMap<>();
         try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT minecraft_uuid, minecraft_name, xuid, verified_at FROM verified_players"
+                "SELECT minecraft_uuid, minecraft_name, xuid, microsoft_email, verified_at FROM verified_players"
         );
              ResultSet resultSet = statement.executeQuery()) {
             while (resultSet.next()) {
@@ -65,6 +66,7 @@ public final class VerificationRepository {
                         uuid,
                         resultSet.getString("minecraft_name"),
                         resultSet.getString("xuid"),
+                        resultSet.getString("microsoft_email"),
                         resultSet.getLong("verified_at")
                 ));
             }
@@ -88,7 +90,7 @@ public final class VerificationRepository {
 
     public synchronized Optional<VerifiedPlayer> findVerified(UUID uuid) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT minecraft_uuid, minecraft_name, xuid, verified_at FROM verified_players WHERE minecraft_uuid = ?"
+                "SELECT minecraft_uuid, minecraft_name, xuid, microsoft_email, verified_at FROM verified_players WHERE minecraft_uuid = ?"
         )) {
             statement.setString(1, uuid.toString());
             try (ResultSet resultSet = statement.executeQuery()) {
@@ -103,7 +105,7 @@ public final class VerificationRepository {
     public synchronized Optional<VerifiedPlayer> findVerifiedByName(String name) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(
                 """
-                SELECT minecraft_uuid, minecraft_name, xuid, verified_at
+                SELECT minecraft_uuid, minecraft_name, xuid, microsoft_email, verified_at
                 FROM verified_players
                 WHERE LOWER(minecraft_name) = LOWER(?)
                 ORDER BY verified_at DESC
@@ -140,6 +142,113 @@ public final class VerificationRepository {
                 }
                 return resultSet.getString("cursor");
             }
+        }
+    }
+
+    public synchronized void savePendingVerification(PendingVerification pending) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                """
+                INSERT OR REPLACE INTO pending_verifications
+                    (token, minecraft_uuid, minecraft_name, link, expires_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """
+        )) {
+            statement.setString(1, pending.token());
+            statement.setString(2, pending.minecraftUuid().toString());
+            statement.setString(3, pending.minecraftName());
+            statement.setString(4, pending.link());
+            statement.setLong(5, pending.expiresAt());
+            statement.setLong(6, pending.createdAt());
+            statement.executeUpdate();
+        }
+    }
+
+    public synchronized Optional<PendingVerification> findReusablePendingVerification(UUID uuid, long nowMillis) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                """
+                SELECT token, minecraft_uuid, minecraft_name, link, expires_at, created_at
+                FROM pending_verifications
+                WHERE minecraft_uuid = ? AND expires_at > ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+        )) {
+            statement.setString(1, uuid.toString());
+            statement.setLong(2, nowMillis);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(readPendingVerification(resultSet));
+            }
+        }
+    }
+
+    public synchronized List<PendingVerification> listPendingVerifications(long nowMillis) throws SQLException {
+        List<PendingVerification> items = new ArrayList<>();
+        try (PreparedStatement statement = connection.prepareStatement(
+                """
+                SELECT token, minecraft_uuid, minecraft_name, link, expires_at, created_at
+                FROM pending_verifications
+                WHERE expires_at > ?
+                ORDER BY created_at ASC
+                """
+        )) {
+            statement.setLong(1, nowMillis);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    items.add(readPendingVerification(resultSet));
+                }
+            }
+        }
+        return items;
+    }
+
+    public synchronized int deleteExpiredPendingVerifications(long nowMillis) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM pending_verifications WHERE expires_at < ?"
+        )) {
+            statement.setLong(1, nowMillis);
+            return statement.executeUpdate();
+        }
+    }
+
+    public synchronized Optional<VerifiedPlayer> applyRemoteVerification(RemoteVerificationResult result, long nowMillis) throws SQLException {
+        boolean previousAutoCommit = connection.getAutoCommit();
+        connection.setAutoCommit(false);
+        try {
+            PendingVerification pending = findPendingVerificationInTransaction(result.token());
+            if (pending == null || pending.expiresAt() < nowMillis || !pending.minecraftUuid().equals(result.minecraftUuid())) {
+                deletePendingVerificationInTransaction(result.token());
+                connection.commit();
+                return Optional.empty();
+            }
+
+            VerifiedPlayer player = new VerifiedPlayer(
+                    result.minecraftUuid(),
+                    result.minecraftName().isBlank() ? pending.minecraftName() : result.minecraftName(),
+                    result.xuid(),
+                    result.email(),
+                    result.verifiedAt()
+            );
+            upsertVerifiedInTransaction(player);
+            deletePendingVerificationInTransaction(result.token());
+            connection.commit();
+            return Optional.of(player);
+        } catch (SQLException exception) {
+            connection.rollback();
+            throw exception;
+        } finally {
+            connection.setAutoCommit(previousAutoCommit);
+        }
+    }
+
+    public synchronized void deletePendingVerification(String token) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM pending_verifications WHERE token = ?"
+        )) {
+            statement.setString(1, token);
+            statement.executeUpdate();
         }
     }
 
@@ -189,6 +298,7 @@ public final class VerificationRepository {
                         item.minecraftUuid(),
                         item.minecraftName(),
                         item.xuid(),
+                        "",
                         item.verifiedAt()
                 );
                 upsertVerifiedInTransaction(verifiedPlayer);
@@ -217,6 +327,7 @@ public final class VerificationRepository {
                         minecraft_uuid TEXT PRIMARY KEY,
                         minecraft_name TEXT NOT NULL,
                         xuid TEXT NOT NULL,
+                        microsoft_email TEXT,
                         verified_at INTEGER NOT NULL
                     )
                     """
@@ -233,6 +344,18 @@ public final class VerificationRepository {
             );
             statement.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS pending_verifications (
+                        token TEXT PRIMARY KEY,
+                        minecraft_uuid TEXT NOT NULL,
+                        minecraft_name TEXT NOT NULL,
+                        link TEXT NOT NULL,
+                        expires_at INTEGER NOT NULL,
+                        created_at INTEGER NOT NULL
+                    )
+                    """
+            );
+            statement.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS sync_state (
                         server_id TEXT PRIMARY KEY,
                         cursor TEXT NOT NULL
@@ -241,7 +364,24 @@ public final class VerificationRepository {
             );
             statement.execute("CREATE INDEX IF NOT EXISTS idx_pending_challenges_uuid ON pending_challenges (minecraft_uuid)");
             statement.execute("CREATE INDEX IF NOT EXISTS idx_pending_challenges_expires ON pending_challenges (expires_at)");
+            statement.execute("CREATE INDEX IF NOT EXISTS idx_pending_verifications_uuid ON pending_verifications (minecraft_uuid)");
+            statement.execute("CREATE INDEX IF NOT EXISTS idx_pending_verifications_expires ON pending_verifications (expires_at)");
             statement.execute("CREATE INDEX IF NOT EXISTS idx_verified_players_name ON verified_players (minecraft_name)");
+        }
+        ensureVerifiedEmailColumn();
+    }
+
+    private void ensureVerifiedEmailColumn() throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("PRAGMA table_info(verified_players)");
+             ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                if ("microsoft_email".equalsIgnoreCase(resultSet.getString("name"))) {
+                    return;
+                }
+            }
+        }
+        try (Statement statement = connection.createStatement()) {
+            statement.execute("ALTER TABLE verified_players ADD COLUMN microsoft_email TEXT");
         }
     }
 
@@ -251,8 +391,38 @@ public final class VerificationRepository {
                 uuid,
                 resultSet.getString("minecraft_name"),
                 resultSet.getString("xuid"),
+                resultSet.getString("microsoft_email"),
                 resultSet.getLong("verified_at")
         );
+    }
+
+    private PendingVerification readPendingVerification(ResultSet resultSet) throws SQLException {
+        return new PendingVerification(
+                resultSet.getString("token"),
+                UUID.fromString(resultSet.getString("minecraft_uuid")),
+                resultSet.getString("minecraft_name"),
+                resultSet.getString("link"),
+                resultSet.getLong("expires_at"),
+                resultSet.getLong("created_at")
+        );
+    }
+
+    private PendingVerification findPendingVerificationInTransaction(String token) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                """
+                SELECT token, minecraft_uuid, minecraft_name, link, expires_at, created_at
+                FROM pending_verifications
+                WHERE token = ?
+                """
+        )) {
+            statement.setString(1, token);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return null;
+                }
+                return readPendingVerification(resultSet);
+            }
+        }
     }
 
     private PendingChallenge findPendingChallengeInTransaction(String challengeId) throws SQLException {
@@ -277,18 +447,29 @@ public final class VerificationRepository {
     private void upsertVerifiedInTransaction(VerifiedPlayer player) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(
                 """
-                INSERT INTO verified_players (minecraft_uuid, minecraft_name, xuid, verified_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO verified_players (minecraft_uuid, minecraft_name, xuid, microsoft_email, verified_at)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(minecraft_uuid) DO UPDATE SET
                     minecraft_name = excluded.minecraft_name,
                     xuid = excluded.xuid,
+                    microsoft_email = excluded.microsoft_email,
                     verified_at = excluded.verified_at
                 """
         )) {
             statement.setString(1, player.minecraftUuid().toString());
             statement.setString(2, player.minecraftName());
             statement.setString(3, player.xuid());
-            statement.setLong(4, player.verifiedAt());
+            statement.setString(4, player.email());
+            statement.setLong(5, player.verifiedAt());
+            statement.executeUpdate();
+        }
+    }
+
+    private void deletePendingVerificationInTransaction(String token) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM pending_verifications WHERE token = ?"
+        )) {
+            statement.setString(1, token);
             statement.executeUpdate();
         }
     }

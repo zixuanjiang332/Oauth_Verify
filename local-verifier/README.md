@@ -4,10 +4,10 @@
 
 ## Azure 设置
 
-在 Azure 应用注册中添加这个重定向 URI：
+在 Azure 应用注册中添加这个正式服重定向 URI：
 
 ```text
-http://localhost:8080/oauth/microsoft/callback
+https://www.chaos-smp.cn/verify
 ```
 
 应用需要支持个人 Microsoft 账号，这样 Minecraft/Xbox 账号才能登录。
@@ -21,8 +21,10 @@ node local-verifier/server.js
 可选环境变量：
 
 ```powershell
-$env:MSVERIFY_CLIENT_ID='74305fb6-cdd7-48fa-8fea-8d75e154cbd0'
-$env:MSVERIFY_REDIRECT_URI='http://localhost:8080/oauth/microsoft/callback'
+$env:MSVERIFY_CLIENT_ID='449be4a2-70a7-4b6b-86b3-ff1f926398f3'
+$env:MSVERIFY_API_KEY='local-test-api-key-change-me'
+$env:MSVERIFY_PUBLIC_BASE_URL='https://www.chaos-smp.cn'
+$env:MSVERIFY_REDIRECT_URI='https://www.chaos-smp.cn/verify'
 $env:MSVERIFY_SHARED_SECRET='local-test-change-this-secret-before-production-0123456789'
 $env:MSVERIFY_SCOPE='XboxLive.signin openid email profile'
 $env:MSVERIFY_ACCEPT_XBOX_ONLY='false'
@@ -43,8 +45,9 @@ $env:MSVERIFY_CLIENT_SECRET='你的 Azure 客户端密钥'
 ## 插件测试配置
 
 ```yaml
-verification-start-url: "http://127.0.0.1:8080/start"
-completed-endpoint: "http://127.0.0.1:8080/api/verifications/completed"
+verification-generate-endpoint: "https://www.chaos-smp.cn/verify/gen"
+verification-result-endpoint: "https://www.chaos-smp.cn/verify/get"
+api-key: "local-test-api-key-change-me"
 poller:
   enabled: true
 ```

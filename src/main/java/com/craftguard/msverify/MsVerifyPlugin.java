@@ -20,6 +20,9 @@ public final class MsVerifyPlugin extends JavaPlugin {
     public void onEnable() {
         saveDefaultConfig();
         reloadConfig();
+        getConfig().options().copyDefaults(true);
+        saveConfig();
+        reloadConfig();
         configValues = ConfigValues.from(this);
 
         try {

@@ -2,11 +2,12 @@ package com.craftguard.msverify.storage;
 
 import java.util.UUID;
 
-public record VerifiedPlayer(
+public record PendingVerification(
+        String token,
         UUID minecraftUuid,
         String minecraftName,
-        String xuid,
-        String email,
-        long verifiedAt
+        String link,
+        long expiresAt,
+        long createdAt
 ) {
 }
